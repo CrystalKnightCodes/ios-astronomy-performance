@@ -13,6 +13,8 @@ class PhotosCollectionViewController: UIViewController, UICollectionViewDataSour
     override func viewDidLoad() {
         super.viewDidLoad()
         
+        photoFetchQueue.maxConcurrentOperationCount = 4
+        
         client.fetchMarsRover(named: "curiosity") { (rover, error) in
             if let error = error {
                 NSLog("Error fetching info for curiosity: \(error)")
@@ -130,8 +132,8 @@ class PhotosCollectionViewController: UIViewController, UICollectionViewDataSour
         solLabel.text = "Sol \(solDescription?.sol ?? 0)"
     }
     
-    private func loadImage(forCell cell: ImageCollectionViewCell, forItemAt indexPath: IndexPath) {
-        let photoReference = photoReferences[indexPath.item]
+    private func loadImage(forCell cell: ImageCollectionViewCell, forItemAt requestedIndexPath: IndexPath) {
+        let photoReference = photoReferences[requestedIndexPath.item]
         
         // Check for image in cache
         if let cachedImageData = cache.value(for: photoReference.id),
@@ -147,21 +149,39 @@ class PhotosCollectionViewController: UIViewController, UICollectionViewDataSour
                 self.cache.cache(value: data, for: photoReference.id)
             }
         }
+        
         let completionOp = BlockOperation {
+            // background queue
             defer { self.operations.removeValue(forKey: photoReference.id) }
             
-            if let currentIndexPath = self.collectionView?.indexPath(for: cell),
-                currentIndexPath != indexPath {
+            // 1. If we hae a photo fetched, then continue
+            // 1.1 Transform the data to image (background)
+            
+            guard let data = fetchOp.imageData,
+                let imageFromData = UIImage(data: data) else { return }
+        
+            // 2.2 Filter (background)
+            let filteredImage = imageFromData.filtered()
+            
+            DispatchQueue.main.async {
+              
+                // 3. Assign the new image to the cell only if it is visible
+            if let visibleIndexPath = self.collectionView?.indexPath(for: cell), // 0
+                visibleIndexPath != requestedIndexPath { // 0
+                
+                // The requested image is no longer visible, return
                 return // Cell has been reused
             }
-            
-            if let data = fetchOp.imageData {
-                cell.imageView.image = UIImage(data: data)?.filtered()
+                
+              // 4. Assign the filtered image to the cell
+                cell.imageView.image = filteredImage
             }
+            // Background queue
         }
-        
+            
         cacheOp.addDependency(fetchOp)
         completionOp.addDependency(fetchOp)
+        
         
         photoFetchQueue.addOperation(fetchOp)
         photoFetchQueue.addOperation(cacheOp)
