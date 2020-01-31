@@ -13,6 +13,7 @@ class PhotosCollectionViewController: UIViewController, UICollectionViewDataSour
     override func viewDidLoad() {
         super.viewDidLoad()
         
+        // Requesting too many operations creates too many objects in memory
         photoFetchQueue.maxConcurrentOperationCount = 4
         
         client.fetchMarsRover(named: "curiosity") { (rover, error) in
@@ -134,66 +135,49 @@ class PhotosCollectionViewController: UIViewController, UICollectionViewDataSour
     
     private func loadImage(forCell cell: ImageCollectionViewCell, forItemAt requestedIndexPath: IndexPath) {
         let photoReference = photoReferences[requestedIndexPath.item]
-        
         // Check for image in cache
-        if let cachedImageData = cache.value(for: photoReference.id),
-            let image = UIImage(data: cachedImageData) {
-            cell.imageView.image = image.filtered()
+        if let cachedImage = cache.value(for: photoReference.id) {
+            cell.imageView.image = cachedImage
             return
         }
-        
         // Start an operation to fetch image data
         let fetchOp = FetchPhotoOperation(photoReference: photoReference)
-        let cacheOp = BlockOperation {
-            if let data = fetchOp.imageData {
-                self.cache.cache(value: data, for: photoReference.id)
-            }
-        }
-        
-        let completionOp = BlockOperation {
+        let processImageOp = BlockOperation {
             // background queue
             defer { self.operations.removeValue(forKey: photoReference.id) }
-            
-            // 1. If we hae a photo fetched, then continue
-            // 1.1 Transform the data to image (background)
-            
+            // 1. If we have a photo fetched, then continue.
+            // 1.1 - Transform the data to image (background)
             guard let data = fetchOp.imageData,
-                let imageFromData = UIImage(data: data) else { return }
-        
-            // 2.2 Filter (background)
-            let filteredImage = imageFromData.filtered()
-            
-            DispatchQueue.main.async {
-              
-                // 3. Assign the new image to the cell only if it is visible
-            if let visibleIndexPath = self.collectionView?.indexPath(for: cell), // 0
-                visibleIndexPath != requestedIndexPath { // 0
-                
-                // The requested image is no longer visible, return
-                return // Cell has been reused
+                let imageFromData = UIImage(data: data) else {
+                return
             }
-                
-              // 4. Assign the filtered image to the cell
+            // 2.1 - Filter (background)
+            // 2.2 - Save to cache
+            let filteredImage = imageFromData.filtered()
+            self.cache.cache(value: filteredImage, for: photoReference.id)
+            DispatchQueue.main.async {
+                // 3. Assign the new image to the cell only if it's visible.
+                if let visibleIndexPath = self.collectionView?.indexPath(for: cell), // 8
+                    visibleIndexPath != requestedIndexPath { // 0
+                    // The requested image is no longer visible. Return.
+                    return
+                }
+                // 4 - Assign the filtered image to the cell
                 cell.imageView.image = filteredImage
             }
-            // Background queue
+            // background queue
         }
-            
-        cacheOp.addDependency(fetchOp)
-        completionOp.addDependency(fetchOp)
         
-        
+        processImageOp.addDependency(fetchOp)
         photoFetchQueue.addOperation(fetchOp)
-        photoFetchQueue.addOperation(cacheOp)
-        OperationQueue.main.addOperation(completionOp)
-        
+        photoFetchQueue.addOperation(processImageOp)
         operations[photoReference.id] = fetchOp
     }
     
     // Properties
     
     private let client = MarsRoverClient()
-    private let cache = Cache<Int, Data>()
+    private let cache = Cache<Int, UIImage>()
     private let photoFetchQueue = OperationQueue()
     private var operations = [Int : Operation]()
     
@@ -202,6 +186,7 @@ class PhotosCollectionViewController: UIViewController, UICollectionViewDataSour
             solDescription = roverInfo?.solDescriptions[10]
         }
     }
+    
     private var solDescription: SolDescription? {
         didSet {
             if let rover = roverInfo,
@@ -215,6 +200,7 @@ class PhotosCollectionViewController: UIViewController, UICollectionViewDataSour
             }
         }
     }
+    
     private var photoReferences = [MarsPhotoReference]() {
         didSet {
             DispatchQueue.main.async { self.collectionView?.reloadData() }
